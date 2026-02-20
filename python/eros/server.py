@@ -41,6 +41,7 @@ mcp = FastMCP(
 
 @mcp.tool(
     annotations={"readOnlyHint": True, "idempotentHint": True},
+    output_schema=None,
 )
 async def semantic_search(
     query: str,
@@ -89,6 +90,7 @@ async def semantic_search(
 
 @mcp.tool(
     annotations={"readOnlyHint": True, "idempotentHint": True},
+    output_schema=None,
 )
 async def find_similar(
     symbol: str,
@@ -125,7 +127,7 @@ async def find_similar(
     )
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def semantic_index(
     operation: str = "stats",
     workspace: str | None = None,
@@ -163,6 +165,7 @@ async def semantic_index(
 
 @mcp.tool(
     annotations={"readOnlyHint": True, "idempotentHint": True},
+    output_schema=None,
 )
 async def explain_retrieval(
     query: str,
