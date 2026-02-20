@@ -115,10 +115,11 @@ RAG diagnostic tool — understand why results ranked as they did.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `EROS_WORKSPACE` | Current directory | Project root (where .julie/ lives). **Required for VS Code.** |
 | `EROS_CODE_MODEL` | `nomic-ai/CodeRankEmbed` | Code embedding model |
 | `EROS_DOCS_MODEL` | `BAAI/bge-small-en-v1.5` | Documentation embedding model |
 | `EROS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Result reranker |
-| `EROS_PROJECT_ROOT` | Current directory | Project root (where .julie/ lives) |
+| `EROS_PROJECT_ROOT` | (fallback for EROS_WORKSPACE) | Legacy alias for EROS_WORKSPACE |
 | `EROS_DATA_DIR` | `.eros` | Where to store vector data |
 
 ---

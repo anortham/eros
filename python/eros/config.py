@@ -35,8 +35,12 @@ class ErosConfig:
     # --- Paths ---
     # Project root — Julie stores .julie/ inside the project directory.
     # Eros discovers Julie's data at {project_root}/.julie/
+    # EROS_WORKSPACE is the primary env var (matches Julie/Goldfish convention).
+    # EROS_PROJECT_ROOT is kept as a fallback for backwards compatibility.
     project_root: Path = field(
-        default_factory=lambda: Path(os.environ.get("EROS_PROJECT_ROOT", os.getcwd()))
+        default_factory=lambda: Path(
+            os.environ.get("EROS_WORKSPACE", os.environ.get("EROS_PROJECT_ROOT", os.getcwd()))
+        ).expanduser()
     )
     # Eros's own data directory (for LanceDB vector store)
     eros_data_dir: Path = field(
