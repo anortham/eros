@@ -1,10 +1,14 @@
 """Tests for dual-model embedding manager and vector storage."""
 
+import logging
+import time
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
-
 from eros.chunking import Chunk
 from eros.config import ErosConfig
+from eros.embeddings import _ModelSlot, resolve_device
 from eros.storage import VectorStorage
 
 
@@ -215,3 +219,57 @@ class TestVectorStorage:
         results = storage.search("code", query_vec, limit=5, where="language = 'python'")
         assert len(results) == 1
         assert results[0]["language"] == "python"
+
+
+class TestModelSlotTiming:
+    """Timing instrumentation in _ModelSlot.load() and encode()."""
+
+    @pytest.fixture
+    def loaded_slot(self):
+        """A _ModelSlot with a mocked model (already loaded)."""
+        slot = _ModelSlot("fake-model", "cpu")
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.randn(3, 8).astype(np.float32)
+        mock_model.get_sentence_embedding_dimension.return_value = 8
+        slot._model = mock_model
+        slot._dimensions = 8
+        slot.last_use_time = time.time()
+        return slot
+
+    def test_encode_logs_timing(self, loaded_slot, caplog):
+        with caplog.at_level(logging.DEBUG, logger="eros.embeddings"):
+            loaded_slot.encode(["a", "b", "c"])
+        assert any("Encoded 3 texts" in r.message for r in caplog.records)
+        assert any("texts/sec" in r.message for r in caplog.records)
+
+    def test_load_logs_timing(self, caplog, monkeypatch):
+        slot = _ModelSlot("fake-model", "cpu")
+        mock_instance = MagicMock()
+        mock_instance.get_sentence_embedding_dimension.return_value = 8
+        mock_cls = MagicMock(return_value=mock_instance)
+
+        monkeypatch.setattr(
+            "sentence_transformers.SentenceTransformer", mock_cls,
+        )
+
+        with caplog.at_level(logging.INFO, logger="eros.embeddings"):
+            slot.load()
+        assert any("loaded in" in r.message for r in caplog.records)
+
+
+class TestResolveDevice:
+    """Device resolution from config string."""
+
+    def test_cpu_explicit(self):
+        device, dtype = resolve_device("cpu")
+        assert device == "cpu"
+        assert dtype == "cpu"
+
+    def test_auto_returns_something(self):
+        device, dtype = resolve_device("auto")
+        assert device in ("cpu", "mps", "cuda")
+        assert dtype in ("cpu", "mps", "cuda")
+
+    def test_config_default_is_cpu(self):
+        config = ErosConfig()
+        assert config.device == "cpu"

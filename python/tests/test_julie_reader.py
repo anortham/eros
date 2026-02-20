@@ -1,10 +1,8 @@
 """Tests for Julie Reader — discovering and reading Julie's SQLite databases."""
 
-import json
 
 import pytest
-
-from eros.julie_reader import JulieReader, JulieSymbol, WorkspaceInfo
+from eros.julie_reader import JulieReader
 
 
 class TestJulieDiscovery:

@@ -212,12 +212,36 @@ async def explain_retrieval(
     )
 
 
+def _setup_logging(config) -> None:
+    """Configure console (INFO) + rotating file (DEBUG) logging."""
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger("eros")
+    root.setLevel(logging.DEBUG)
+
+    fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    log_dir = config.logs_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        log_dir / "eros.log", maxBytes=5_000_000, backupCount=3,
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+
 def main():
     """Entry point for `python -m eros.server`."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    from eros.config import ErosConfig
+
+    config = ErosConfig()
+    _setup_logging(config)
     mcp.run(transport="stdio")
 
 

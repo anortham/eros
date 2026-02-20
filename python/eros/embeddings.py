@@ -25,29 +25,43 @@ from eros.config import ErosConfig
 logger = logging.getLogger("eros.embeddings")
 
 
-def detect_device() -> tuple[str, str]:
-    """Detect the best available compute device.
+def _auto_detect_device() -> tuple[str, str]:
+    """Auto-detect the best available compute device.
 
     Returns (device, device_type) tuple.
     """
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        logger.info("Using CUDA GPU: %s", gpu_name)
+        logger.info("Auto-detected CUDA GPU: %s", gpu_name)
         return "cuda", "cuda"
 
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        logger.info("Using Apple MPS")
+        logger.info("Auto-detected Apple MPS")
         return "mps", "mps"
 
     try:
         import torch_directml
-        logger.info("Using DirectML")
+        logger.info("Auto-detected DirectML")
         return str(torch_directml.device()), "directml"
     except ImportError:
         pass
 
     logger.info("Using CPU")
     return "cpu", "cpu"
+
+
+def resolve_device(configured: str) -> tuple[str, str]:
+    """Resolve the compute device from config.
+
+    Args:
+        configured: Device string from config — "cpu", "mps", "cuda", or "auto".
+
+    Returns (device, device_type) tuple.
+    """
+    if configured == "auto":
+        return _auto_detect_device()
+    logger.info("Using device: %s (set EROS_DEVICE=auto to auto-detect)", configured)
+    return configured, configured
 
 
 class _ModelSlot:
@@ -76,27 +90,37 @@ class _ModelSlot:
         from sentence_transformers import SentenceTransformer
 
         logger.info("Loading model '%s' on device '%s'...", self.model_name, self.device)
+        t0 = time.monotonic()
 
         # Always pass trust_remote_code — models that don't need it simply ignore it.
         self._model = SentenceTransformer(
             self.model_name, device=self.device, trust_remote_code=True
         )
 
+        elapsed = time.monotonic() - t0
         self._dimensions = self._model.get_sentence_embedding_dimension()
         self.last_use_time = time.time()
         logger.info(
-            "Model '%s' loaded: %dD embeddings", self.model_name, self._dimensions
+            "Model '%s' loaded in %.1fs: %dD embeddings",
+            self.model_name, elapsed, self._dimensions,
         )
 
     def encode(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
         """Encode texts into embedding vectors."""
         self.load()
         self.last_use_time = time.time()
+        t0 = time.monotonic()
         embeddings = self._model.encode(
             texts,
             batch_size=batch_size,
             show_progress_bar=False,
             normalize_embeddings=True,
+        )
+        elapsed = time.monotonic() - t0
+        logger.debug(
+            "Encoded %d texts with '%s' in %.2fs (%.0f texts/sec)",
+            len(texts), self.model_name, elapsed,
+            len(texts) / elapsed if elapsed > 0 else 0,
         )
         return np.array(embeddings, dtype=np.float32)
 
@@ -118,7 +142,7 @@ class DualEmbeddingManager:
 
     def __init__(self, config: ErosConfig):
         self._config = config
-        device, device_type = detect_device()
+        device, device_type = resolve_device(config.device)
         self._device = device
         self._device_type = device_type
 

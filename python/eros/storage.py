@@ -9,7 +9,6 @@ Each collection has its own schema tailored to its metadata needs.
 """
 
 import logging
-from pathlib import Path
 
 import lancedb
 import numpy as np
@@ -111,7 +110,7 @@ class VectorStorage:
         table = self._get_or_create_table(collection, dim)
 
         rows = []
-        for chunk, vec in zip(chunks, vectors):
+        for chunk, vec in zip(chunks, vectors, strict=True):
             row = {"vector": vec.tolist(), "text": chunk.text}
             row.update(chunk.metadata)
             # Ensure integer fields are Python ints (not None)

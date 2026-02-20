@@ -1,19 +1,16 @@
 """Tests for retrieval logic — search routing, RRF fusion, and reranking."""
 
-import asyncio
 
 import numpy as np
 import pytest
-
-from eros.chunking import Chunk
 from eros.config import ErosConfig
 from eros.retrieval import (
     SearchResult,
-    format_results,
     format_explain,
+    format_results,
     manage_index,
-    search,
     rrf_fuse,
+    search,
 )
 from eros.storage import VectorStorage
 
@@ -176,7 +173,7 @@ class TestMultiWorkspaceIndexing:
     @pytest.mark.asyncio
     async def test_index_all_workspaces(self, indexing_env):
         """Indexing with workspace='all' should index primary + reference."""
-        result = await manage_index(
+        await manage_index(
             operation="index",
             workspace="all",
             doc_paths=None,
@@ -234,6 +231,24 @@ class TestMultiWorkspaceIndexing:
         )
         stats = indexing_env["storage"].stats()
         assert stats["code"]["count"] == 1  # Only reference symbol
+
+    @pytest.mark.asyncio
+    async def test_index_reports_timing(self, indexing_env):
+        """Index output should include total and per-workspace timing."""
+        import re
+
+        result = await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        # Total time in summary line
+        assert re.search(r"in \d+\.\d+s", result), f"No total timing in: {result}"
+        # Per-workspace time in brackets
+        assert re.search(r"\[\d+\.\d+s\]", result), f"No per-ws timing in: {result}"
 
 
 class TestWorkspaceFilteredSearch:

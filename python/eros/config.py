@@ -62,10 +62,19 @@ class ErosConfig:
     rrf_k: int = 60
 
     # --- Performance ---
+    # Compute device: "cpu" (default, safe), "mps", "cuda", or "auto" (detect best)
+    device: str = field(
+        default_factory=lambda: os.environ.get("EROS_DEVICE", "cpu")
+    )
     # Auto-unload models after this many seconds of inactivity
     model_idle_timeout_secs: int = 300
     # Check interval for idle model unloading
     model_check_interval_secs: int = 60
+
+    @property
+    def logs_dir(self) -> Path:
+        """Path to Eros log directory."""
+        return self.eros_data_dir / "logs"
 
     @property
     def vectors_path(self) -> Path:

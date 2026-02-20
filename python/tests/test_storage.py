@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-
 from eros.chunking import Chunk
 from eros.config import ErosConfig
 from eros.storage import VectorStorage

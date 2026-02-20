@@ -1,10 +1,8 @@
 """Tests for code and documentation chunking strategies."""
 
-import pytest
 from pathlib import Path
 
 from eros.chunking import (
-    Chunk,
     chunk_code_symbols,
     chunk_doc_file,
     chunk_doc_files,
@@ -234,7 +232,6 @@ class TestDocChunking:
     def test_respects_max_chars(self):
         """Should split sections that exceed max_chars."""
         import tempfile
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             doc_path = Path(tmpdir)

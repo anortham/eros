@@ -10,6 +10,7 @@ Handles:
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -351,6 +352,7 @@ async def _build_index(
     config: ErosConfig,
 ) -> str:
     """Build or refresh the vector index from Julie's data and documentation."""
+    t_start = time.monotonic()
     lines = []
     target = workspace or "all"
     primary_ws_id = ""
@@ -382,17 +384,17 @@ async def _build_index(
 
             if code_chunks:
                 texts = [c.text for c in code_chunks]
-                vectors = await asyncio.to_thread(embeddings.embed_code, texts)
+                t_ws = time.monotonic()
+                vectors = await asyncio.to_thread(embeddings.embed_code, texts, batch_size=64)
+                ws_elapsed = time.monotonic() - t_ws
                 count = storage.add_chunks(code_chunks, vectors)
                 total_chunks += count
                 total_symbols += len(symbols)
-                lines.append(
-                    f"  {ws.display_name} ({ws.workspace_type}): "
-                    f"{count} chunks from {len(symbols)} symbols"
-                )
+                lines.append(f"  {ws.display_name} ({ws.workspace_type}): {count} chunks from {len(symbols)} symbols [{ws_elapsed:.1f}s]")
 
         if total_chunks:
-            lines.insert(0, f"Indexed {total_chunks} code chunks from {total_symbols} symbols across {len(workspaces)} workspace(s):")
+            total_elapsed = time.monotonic() - t_start
+            lines.insert(0, f"Indexed {total_chunks} code chunks from {total_symbols} symbols across {len(workspaces)} workspace(s) in {total_elapsed:.1f}s:")
         else:
             lines.append("No code symbols found to index")
 
@@ -412,8 +414,6 @@ async def _build_index(
                 root_doc_files.append(path)
 
     all_doc_chunks: list[Chunk] = []
-
-    # Chunks from doc directories (recursive)
     for doc_dir in doc_dirs:
         all_doc_chunks.extend(
             chunk_documentation(
@@ -423,7 +423,6 @@ async def _build_index(
             )
         )
 
-    # Chunks from root-level doc files
     all_doc_chunks.extend(
         chunk_doc_files(
             root_doc_files,
@@ -441,14 +440,16 @@ async def _build_index(
             storage.clear_collection("docs")
 
         texts = [c.text for c in all_doc_chunks]
-        vectors = await asyncio.to_thread(embeddings.embed_docs, texts)
+        t_doc = time.monotonic()
+        vectors = await asyncio.to_thread(embeddings.embed_docs, texts, batch_size=64)
+        doc_elapsed = time.monotonic() - t_doc
         count = storage.add_chunks(all_doc_chunks, vectors)
-        source_parts = []
+        parts = []
         if doc_dirs:
-            source_parts.append(f"{len(doc_dirs)} directories")
+            parts.append(f"{len(doc_dirs)} directories")
         if root_doc_files:
-            source_parts.append(f"{len(root_doc_files)} root files")
-        lines.append(f"Indexed {count} doc chunks from {' + '.join(source_parts)}")
+            parts.append(f"{len(root_doc_files)} root files")
+        lines.append(f"Indexed {count} doc chunks from {' + '.join(parts)} [{doc_elapsed:.1f}s]")
     else:
         lines.append("No documentation found to index")
 
