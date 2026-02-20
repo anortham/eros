@@ -28,6 +28,8 @@ dependencies = [
     "pyarrow>=14.0",
     # PyTorch (verified 2026-02-20)
     "torch>=2.0",
+    # Required by CodeRankEmbed's custom model code
+    "einops>=0.7",
     # Cross-encoder reranking
     "numpy>=1.24",
 ]

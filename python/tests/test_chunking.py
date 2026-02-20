@@ -1,11 +1,15 @@
 """Tests for code and documentation chunking strategies."""
 
 import pytest
+from pathlib import Path
 
 from eros.chunking import (
     Chunk,
     chunk_code_symbols,
+    chunk_doc_file,
+    chunk_doc_files,
     chunk_documentation,
+    discover_doc_sources,
 )
 from eros.julie_reader import JulieSymbol
 
@@ -216,3 +220,138 @@ class TestDocChunking:
         (docs_dir / "data.json").write_text('{"key": "value"}\n')
         chunks = chunk_documentation(docs_dir)
         assert all(c.metadata["file_path"].endswith(".md") for c in chunks)
+
+
+class TestChunkDocFile:
+    """Test chunking a single documentation file."""
+
+    def test_chunks_single_markdown_file(self, tmp_path):
+        """Should produce chunks from a single .md file."""
+        md = tmp_path / "README.md"
+        md.write_text("# Project\n\n## Setup\n\nRun `pip install`.\n\n## Usage\n\nImport and go.\n")
+        chunks = chunk_doc_file(md)
+        assert len(chunks) >= 2
+        assert all(c.collection == "docs" for c in chunks)
+
+    def test_metadata_uses_filename(self, tmp_path):
+        """Metadata file_path should be the file name when no base_path given."""
+        md = tmp_path / "GUIDE.md"
+        md.write_text("# Guide\n\nSome content here.\n")
+        chunks = chunk_doc_file(md)
+        assert chunks[0].metadata["file_path"] == "GUIDE.md"
+
+    def test_metadata_uses_relative_path(self, tmp_path):
+        """When base_path is given, file_path should be relative to it."""
+        subdir = tmp_path / "nested"
+        subdir.mkdir()
+        md = subdir / "deep.md"
+        md.write_text("# Deep\n\nContent.\n")
+        chunks = chunk_doc_file(md, base_path=tmp_path)
+        assert chunks[0].metadata["file_path"] == "nested/deep.md"
+
+    def test_returns_empty_for_nonexistent_file(self, tmp_path):
+        """Should return empty list for a file that doesn't exist."""
+        missing = tmp_path / "nope.md"
+        chunks = chunk_doc_file(missing)
+        assert chunks == []
+
+    def test_respects_max_chars(self, tmp_path):
+        """Should split long sections when max_chars is small."""
+        md = tmp_path / "long.md"
+        md.write_text("# Title\n\n" + ("word " * 500))
+        chunks = chunk_doc_file(md, max_chars=200)
+        assert len(chunks) >= 2
+
+
+class TestChunkDocFiles:
+    """Test chunking a list of individual doc files."""
+
+    def test_chunks_multiple_files(self, tmp_path):
+        """Should produce chunks from all provided files."""
+        readme = tmp_path / "README.md"
+        readme.write_text("# Readme\n\nHello world.\n")
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text("# Changelog\n\n## v1.0\n\nInitial release.\n")
+        chunks = chunk_doc_files([readme, changelog])
+        files_seen = {c.metadata["file_path"] for c in chunks}
+        assert "README.md" in files_seen
+        assert "CHANGELOG.md" in files_seen
+
+    def test_skips_missing_files(self, tmp_path):
+        """Should silently skip files that don't exist."""
+        real = tmp_path / "real.md"
+        real.write_text("# Real\n\nContent.\n")
+        fake = tmp_path / "fake.md"
+        chunks = chunk_doc_files([real, fake])
+        assert len(chunks) >= 1
+        assert all("real.md" in c.metadata["file_path"] for c in chunks)
+
+    def test_empty_list(self):
+        """Should return empty list for empty input."""
+        assert chunk_doc_files([]) == []
+
+
+class TestDiscoverDocSources:
+    """Test automatic discovery of documentation sources."""
+
+    def test_finds_root_level_md_files(self, tmp_path):
+        """Should find .md files at the project root."""
+        (tmp_path / "README.md").write_text("# Hi")
+        (tmp_path / "CLAUDE.md").write_text("# Rules")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hi')")
+        dirs, files = discover_doc_sources(tmp_path)
+        filenames = {f.name for f in files}
+        assert "README.md" in filenames
+        assert "CLAUDE.md" in filenames
+
+    def test_finds_docs_directories(self, tmp_path):
+        """Should find docs/, doc/, documentation/ directories."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "guide.md").write_text("# Guide")
+        dirs, files = discover_doc_sources(tmp_path)
+        assert any(d.name == "docs" for d in dirs)
+
+    def test_does_not_include_root_files_already_in_dirs(self, tmp_path):
+        """Root-level files should NOT include files inside discovered directories."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "guide.md").write_text("# Guide")
+        (tmp_path / "README.md").write_text("# Hi")
+        dirs, files = discover_doc_sources(tmp_path)
+        # Files should only be root-level, not inside docs/
+        for f in files:
+            assert f.parent == tmp_path
+
+    def test_skips_hidden_and_build_dirs(self, tmp_path):
+        """Should not discover files in .git, .venv, node_modules, etc."""
+        hidden = tmp_path / ".git"
+        hidden.mkdir()
+        (hidden / "README.md").write_text("# Git internal")
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "notes.md").write_text("# Venv")
+        (tmp_path / "README.md").write_text("# Real")
+        dirs, files = discover_doc_sources(tmp_path)
+        filenames = {f.name for f in files}
+        dir_names = {d.name for d in dirs}
+        assert ".git" not in dir_names
+        assert ".venv" not in dir_names
+        # Root README should still be found
+        assert "README.md" in filenames
+
+    def test_finds_txt_and_rst_files(self, tmp_path):
+        """Should discover .txt and .rst doc files at root level."""
+        (tmp_path / "INSTALL.txt").write_text("Install instructions")
+        (tmp_path / "CHANGES.rst").write_text("Changes\n=======\n")
+        dirs, files = discover_doc_sources(tmp_path)
+        extensions = {f.suffix for f in files}
+        assert ".txt" in extensions
+        assert ".rst" in extensions
+
+    def test_empty_project(self, tmp_path):
+        """Should return empty lists for a project with no docs."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hi')")
+        dirs, files = discover_doc_sources(tmp_path)
+        assert dirs == []
+        assert files == []

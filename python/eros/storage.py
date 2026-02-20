@@ -154,22 +154,12 @@ class VectorStorage:
             return []
 
     def clear_collection(self, collection: str):
-        """Drop and recreate a collection."""
-        if collection in self._tables:
-            dim = self._dims.get(collection, 384)
-            # Try to detect dimension from existing table
-            try:
-                schema = self._tables[collection].schema
-                vec_field = schema.field("vector")
-                dim = vec_field.type.list_size
-            except Exception:
-                pass
-            del self._tables[collection]
-            try:
-                self._db.drop_table(collection)
-            except Exception:
-                pass
-            self._get_or_create_table(collection, dim)
+        """Drop a collection. It will be recreated with the correct schema on next add."""
+        self._tables.pop(collection, None)
+        try:
+            self._db.drop_table(collection)
+        except Exception:
+            pass
 
     def stats(self) -> dict:
         """Return statistics for each collection."""

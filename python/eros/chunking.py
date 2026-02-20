@@ -92,48 +92,116 @@ def chunk_code_symbols(
     return chunks
 
 
+def chunk_doc_file(
+    file_path: Path,
+    base_path: Path | None = None,
+    max_chars: int = 2000,
+    overlap: int = 200,
+) -> list[Chunk]:
+    """Chunk a single documentation file into section-based chunks.
+
+    Args:
+        file_path: Path to the documentation file.
+        base_path: If given, metadata file_path is relative to this.
+                   Otherwise uses the file name alone.
+        max_chars: Maximum characters per chunk.
+        overlap: Character overlap between consecutive chunks.
+    """
+    file_path = Path(file_path)
+    if not file_path.is_file():
+        return []
+
+    text = file_path.read_text(encoding="utf-8", errors="replace")
+    rel_path = (
+        str(file_path.relative_to(base_path)) if base_path else file_path.name
+    )
+
+    chunks: list[Chunk] = []
+    sections = _split_markdown_sections(text)
+    for section_title, section_text in sections:
+        section_chunks = _split_with_overlap(section_text, max_chars, overlap)
+        for i, chunk_text in enumerate(section_chunks):
+            suffix = f" (part {i + 1})" if len(section_chunks) > 1 else ""
+            chunks.append(
+                Chunk(
+                    text=chunk_text,
+                    collection="docs",
+                    metadata={
+                        "file_path": rel_path,
+                        "section": f"{section_title}{suffix}",
+                    },
+                )
+            )
+    return chunks
+
+
+def chunk_doc_files(
+    files: list[Path],
+    max_chars: int = 2000,
+    overlap: int = 200,
+) -> list[Chunk]:
+    """Chunk a list of individual documentation files.
+
+    Each file's metadata uses its filename (no base_path relativity).
+    """
+    chunks: list[Chunk] = []
+    for f in files:
+        chunks.extend(chunk_doc_file(f, max_chars=max_chars, overlap=overlap))
+    return chunks
+
+
 def chunk_documentation(
     docs_path: Path,
     max_chars: int = 2000,
     overlap: int = 200,
 ) -> list[Chunk]:
-    """Split documentation files into section-based chunks.
+    """Split all documentation files in a directory into section-based chunks.
 
-    Splits on ## headings for markdown files. Sections exceeding
-    max_chars are further split with overlap for context continuity.
+    Recursively walks the directory for .md/.txt/.rst/.adoc files.
+    Splits on ## headings for markdown. Sections exceeding max_chars
+    are further split with overlap for context continuity.
     """
     docs_path = Path(docs_path)
     if not docs_path.is_dir():
         return []
 
     chunks: list[Chunk] = []
-
     for file_path in sorted(docs_path.rglob("*")):
         if not file_path.is_file():
             continue
         if file_path.suffix.lower() not in DOC_EXTENSIONS:
             continue
-
-        text = file_path.read_text(encoding="utf-8", errors="replace")
-        rel_path = str(file_path.relative_to(docs_path))
-
-        sections = _split_markdown_sections(text)
-        for section_title, section_text in sections:
-            section_chunks = _split_with_overlap(section_text, max_chars, overlap)
-            for i, chunk_text in enumerate(section_chunks):
-                suffix = f" (part {i + 1})" if len(section_chunks) > 1 else ""
-                chunks.append(
-                    Chunk(
-                        text=chunk_text,
-                        collection="docs",
-                        metadata={
-                            "file_path": rel_path,
-                            "section": f"{section_title}{suffix}",
-                        },
-                    )
-                )
-
+        chunks.extend(
+            chunk_doc_file(file_path, base_path=docs_path, max_chars=max_chars, overlap=overlap)
+        )
     return chunks
+
+
+def discover_doc_sources(
+    project_root: Path,
+) -> tuple[list[Path], list[Path]]:
+    """Discover documentation directories and root-level doc files.
+
+    Returns:
+        (directories, files) — directories are scanned recursively by
+        chunk_documentation; files are individual root-level docs.
+    """
+    project_root = Path(project_root)
+    dirs: list[Path] = []
+    files: list[Path] = []
+
+    # Well-known doc directories
+    for name in ("docs", "doc", "documentation"):
+        candidate = project_root / name
+        if candidate.is_dir():
+            dirs.append(candidate)
+
+    # Root-level doc files (non-recursive, immediate children only)
+    for entry in sorted(project_root.iterdir()):
+        if entry.is_file() and entry.suffix.lower() in DOC_EXTENSIONS:
+            files.append(entry)
+
+    return dirs, files
 
 
 def _split_markdown_sections(text: str) -> list[tuple[str, str]]:

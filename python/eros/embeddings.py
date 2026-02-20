@@ -75,23 +75,12 @@ class _ModelSlot:
 
         from sentence_transformers import SentenceTransformer
 
-        needs_trust = "jina" in self.model_name.lower()
         logger.info("Loading model '%s' on device '%s'...", self.model_name, self.device)
 
-        try:
-            if needs_trust:
-                self._model = SentenceTransformer(
-                    self.model_name, device=self.device, trust_remote_code=True
-                )
-            else:
-                self._model = SentenceTransformer(self.model_name, device=self.device)
-        except Exception:
-            fallback = "BAAI/bge-small-en-v1.5"
-            logger.warning(
-                "Failed to load '%s', falling back to '%s'", self.model_name, fallback
-            )
-            self._model = SentenceTransformer(fallback, device=self.device)
-            self.model_name = fallback
+        # Always pass trust_remote_code — models that don't need it simply ignore it.
+        self._model = SentenceTransformer(
+            self.model_name, device=self.device, trust_remote_code=True
+        )
 
         self._dimensions = self._model.get_sentence_embedding_dimension()
         self.last_use_time = time.time()

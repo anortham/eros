@@ -1,5 +1,5 @@
 """
-Eros MCP Server — 4 semantic search tools.
+Eros MCP Server — semantic code intelligence tools.
 
 Tools:
   - semantic_search: Find code or documentation by meaning/intent
@@ -9,6 +9,7 @@ Tools:
 """
 
 import logging
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -16,13 +17,31 @@ from eros.lifecycle import lifespan
 
 logger = logging.getLogger("eros")
 
+
+def _load_instructions() -> str | None:
+    """Load agent instructions from EROS_AGENT_INSTRUCTIONS.md."""
+    candidates = [
+        Path("EROS_AGENT_INSTRUCTIONS.md"),
+        Path(__file__).parent.parent.parent / "EROS_AGENT_INSTRUCTIONS.md",
+    ]
+    for path in candidates:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            continue
+    return None
+
+
 mcp = FastMCP(
     "Eros Semantic Code Intelligence",
+    instructions=_load_instructions(),
     lifespan=lifespan,
 )
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations={"readOnlyHint": True, "idempotentHint": True},
+)
 async def semantic_search(
     query: str,
     scope: str = "all",
@@ -33,13 +52,17 @@ async def semantic_search(
 ) -> str:
     """Find code or documentation by meaning/intent.
 
+    Use this when text search (fast_search) returns noise or you're searching
+    by concept rather than exact names. Searches embedding vectors built from
+    Julie's symbol data and project documentation.
+
     Args:
         query: Natural language description of what you're looking for
-        scope: Search scope — "code", "docs", or "all"
+        scope: Search scope — "code" (implementation), "docs" (documentation), or "all" (both, fused with RRF)
         language: Filter by programming language (e.g., "python", "rust")
         file_pattern: Filter by file glob pattern (e.g., "src/**/*.py")
-        limit: Maximum results to return
-        explain: Show score breakdown and ranking details
+        limit: Maximum results to return (default: 20)
+        explain: Show score breakdown and ranking details for debugging search quality
 
     Returns:
         Matching code or documentation ranked by semantic relevance.
@@ -64,7 +87,9 @@ async def semantic_search(
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations={"readOnlyHint": True, "idempotentHint": True},
+)
 async def find_similar(
     symbol: str,
     scope: str = "code",
@@ -72,10 +97,13 @@ async def find_similar(
 ) -> str:
     """Find conceptually similar code to a given symbol or code snippet.
 
+    Use this to discover duplicate implementations, related patterns, or
+    alternative approaches. Pass a symbol name or a short code snippet.
+
     Args:
         symbol: Symbol name or code snippet to find similar code for
         scope: Search scope — "code" or "docs"
-        limit: Maximum results to return
+        limit: Maximum results to return (default: 10)
 
     Returns:
         Code or documentation that is semantically similar.
@@ -105,13 +133,16 @@ async def semantic_index(
 ) -> str:
     """Manage the semantic vector index.
 
+    The index must be built before search works. Rebuild after Julie
+    re-indexes or after documentation changes.
+
     Args:
-        operation: "index" (build/rebuild), "refresh" (incremental), "stats", "health"
+        operation: "index" (full rebuild), "refresh" (incremental), "stats" (index size + model status), "health" (project setup check)
         workspace: Julie workspace ID to index (default: auto-discover primary)
-        doc_paths: Additional documentation paths to index
+        doc_paths: Additional documentation paths to index (directories or individual files)
 
     Returns:
-        Operation result — index statistics, health report, etc.
+        Operation result — index statistics, health report, or indexing summary.
     """
     from eros.lifecycle import wait_for_init
 
@@ -130,7 +161,9 @@ async def semantic_index(
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations={"readOnlyHint": True, "idempotentHint": True},
+)
 async def explain_retrieval(
     query: str,
     result_id: str | None = None,
@@ -138,14 +171,17 @@ async def explain_retrieval(
 ) -> str:
     """RAG diagnostic tool — understand why results ranked the way they did.
 
+    Use this when search results seem wrong or you want to understand the
+    ranking. Shows embedding similarity scores for the top result or a
+    specific result you identify.
+
     Args:
         query: The search query to analyze
-        result_id: ID of a specific result to explain
+        result_id: ID of a specific result to explain (from metadata)
         result_text: Text of a specific result to explain (alternative to result_id)
 
     Returns:
-        Detailed score breakdown: embedding similarity, token overlap,
-        reranker score, fusion weight.
+        Score breakdown showing embedding similarity and ranking details.
     """
     from eros.lifecycle import wait_for_init
 

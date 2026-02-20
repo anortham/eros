@@ -13,7 +13,13 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from eros.chunking import Chunk, chunk_code_symbols, chunk_documentation
+from eros.chunking import (
+    Chunk,
+    chunk_code_symbols,
+    chunk_doc_files,
+    chunk_documentation,
+    discover_doc_sources,
+)
 from eros.config import ErosConfig
 from eros.embeddings import DualEmbeddingManager
 from eros.julie_reader import JulieReader
@@ -331,12 +337,7 @@ async def _build_index(
         lines.append(f"Julie data not available: {e}")
 
     # --- Index documentation ---
-    doc_dirs = []
-    # Check for common doc directories in the project
-    for name in ["docs", "doc", "documentation"]:
-        doc_dir = config.project_root / name
-        if doc_dir.is_dir():
-            doc_dirs.append(doc_dir)
+    doc_dirs, root_doc_files = discover_doc_sources(config.project_root)
 
     # Add any explicitly specified doc paths
     if doc_paths:
@@ -344,29 +345,45 @@ async def _build_index(
             path = Path(p)
             if path.is_dir():
                 doc_dirs.append(path)
+            elif path.is_file():
+                root_doc_files.append(path)
 
-    if doc_dirs:
-        all_doc_chunks = []
-        for doc_dir in doc_dirs:
-            chunks = chunk_documentation(
+    all_doc_chunks: list[Chunk] = []
+
+    # Chunks from doc directories (recursive)
+    for doc_dir in doc_dirs:
+        all_doc_chunks.extend(
+            chunk_documentation(
                 doc_dir,
                 max_chars=config.max_doc_chunk_chars,
                 overlap=config.doc_chunk_overlap,
             )
-            all_doc_chunks.extend(chunks)
+        )
 
-        if all_doc_chunks:
-            if full_rebuild:
-                storage.clear_collection("docs")
+    # Chunks from root-level doc files
+    all_doc_chunks.extend(
+        chunk_doc_files(
+            root_doc_files,
+            max_chars=config.max_doc_chunk_chars,
+            overlap=config.doc_chunk_overlap,
+        )
+    )
 
-            texts = [c.text for c in all_doc_chunks]
-            vectors = await asyncio.to_thread(embeddings.embed_docs, texts)
-            count = storage.add_chunks(all_doc_chunks, vectors)
-            lines.append(f"Indexed {count} doc chunks from {len(doc_dirs)} directories")
-        else:
-            lines.append("No documentation found to index")
+    if all_doc_chunks:
+        if full_rebuild:
+            storage.clear_collection("docs")
+
+        texts = [c.text for c in all_doc_chunks]
+        vectors = await asyncio.to_thread(embeddings.embed_docs, texts)
+        count = storage.add_chunks(all_doc_chunks, vectors)
+        source_parts = []
+        if doc_dirs:
+            source_parts.append(f"{len(doc_dirs)} directories")
+        if root_doc_files:
+            source_parts.append(f"{len(root_doc_files)} root files")
+        lines.append(f"Indexed {count} doc chunks from {' + '.join(source_parts)}")
     else:
-        lines.append("No documentation directories found")
+        lines.append("No documentation found to index")
 
     return "\n".join(lines) if lines else "Nothing to index"
 

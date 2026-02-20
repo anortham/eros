@@ -18,7 +18,7 @@ class ErosConfig:
     # Code model: optimized for source code understanding
     code_model: str = field(
         default_factory=lambda: os.environ.get(
-            "EROS_CODE_MODEL", "jinaai/jina-embeddings-v2-base-code"
+            "EROS_CODE_MODEL", "nomic-ai/CodeRankEmbed"
         )
     )
     # Prose model: optimized for natural language / documentation
