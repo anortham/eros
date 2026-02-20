@@ -143,6 +143,26 @@ def format_explain(query: str, result: SearchResult) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_EXCLUDE_KEYS = frozenset(("vector", "text", "_distance"))
+
+
+def _to_results(raw: list[dict], collection: str) -> list[SearchResult]:
+    """Convert raw LanceDB results to SearchResult objects."""
+    return [
+        SearchResult(
+            text=r.get("text", ""),
+            score=1.0 / (1.0 + r.get("_distance", 0.0)),
+            collection=collection,
+            metadata={k: v for k, v in r.items() if k not in _EXCLUDE_KEYS},
+        )
+        for r in raw
+    ]
+
+
+# ---------------------------------------------------------------------------
 # MCP Tool Implementations
 # ---------------------------------------------------------------------------
 
@@ -157,19 +177,26 @@ async def search(
     embeddings: DualEmbeddingManager,
     storage: VectorStorage,
     config: ErosConfig,
+    workspace: str | None = None,
 ) -> str:
     """Implementation of the semantic_search tool."""
     results: list[SearchResult] = []
 
+    # Resolve workspace to a filter value for WHERE clauses.
+    # None means no filter (search all).
+    ws_filter = workspace  # pass through directly; None = no filter
+
     if scope in ("code", "all"):
         code_results = await _search_collection(
-            query, "code", language, file_pattern, limit, embeddings, storage
+            query, "code", language, file_pattern, limit, embeddings, storage,
+            workspace_id=ws_filter,
         )
         results.extend(code_results)
 
     if scope in ("docs", "all"):
         doc_results = await _search_collection(
-            query, "docs", None, file_pattern, limit, embeddings, storage
+            query, "docs", None, file_pattern, limit, embeddings, storage,
+            workspace_id=ws_filter,
         )
         results.extend(doc_results)
 
@@ -193,6 +220,7 @@ async def _search_collection(
     limit: int,
     embeddings: DualEmbeddingManager,
     storage: VectorStorage,
+    workspace_id: str | None = None,
 ) -> list[SearchResult]:
     """Search a single collection."""
     # Embed the query with the appropriate model
@@ -206,6 +234,8 @@ async def _search_collection(
         # Simple glob-to-SQL: convert * to %
         pattern = file_pattern.replace("*", "%")
         where_parts.append(f"file_path LIKE '{pattern}'")
+    if workspace_id:
+        where_parts.append(f"workspace_id = '{workspace_id}'")
 
     where = " AND ".join(where_parts) if where_parts else None
 
@@ -213,15 +243,7 @@ async def _search_collection(
         storage.search, collection, query_vec, limit, where
     )
 
-    return [
-        SearchResult(
-            text=r.get("text", ""),
-            score=1.0 / (1.0 + r.get("_distance", 0.0)),  # Convert distance to score
-            collection=collection,
-            metadata={k: v for k, v in r.items() if k not in ("vector", "text", "_distance")},
-        )
-        for r in raw_results
-    ]
+    return _to_results(raw_results, collection)
 
 
 async def find_similar_code(
@@ -231,26 +253,18 @@ async def find_similar_code(
     embeddings: DualEmbeddingManager,
     storage: VectorStorage,
     config: ErosConfig,
+    workspace: str | None = None,
 ) -> str:
     """Implementation of the find_similar tool."""
     collection = "code" if scope == "code" else "docs"
     query_vec = await asyncio.to_thread(embeddings.embed_query, symbol, collection)
 
+    where = f"workspace_id = '{workspace}'" if workspace else None
     raw_results = await asyncio.to_thread(
-        storage.search, collection, query_vec, limit
+        storage.search, collection, query_vec, limit, where
     )
 
-    results = [
-        SearchResult(
-            text=r.get("text", ""),
-            score=1.0 / (1.0 + r.get("_distance", 0.0)),
-            collection=collection,
-            metadata={k: v for k, v in r.items() if k not in ("vector", "text", "_distance")},
-        )
-        for r in raw_results
-    ]
-
-    return format_results(results, explain=False)
+    return format_results(_to_results(raw_results, collection), explain=False)
 
 
 async def manage_index(
@@ -280,16 +294,44 @@ async def manage_index(
         lines.append(f"  Project root: {config.project_root}")
         julie_exists = config.julie_dir.exists()
         lines.append(f"  Julie data: {'found' if julie_exists else 'NOT FOUND'}")
+
+        # List workspaces
+        if julie_exists:
+            try:
+                reader = JulieReader(config.project_root)
+                workspaces = reader.list_workspaces()
+                lines.append(f"  Workspaces: {len(workspaces)}")
+                for ws in workspaces:
+                    lines.append(f"    - {ws.display_name} ({ws.workspace_type}) [{ws.id}]")
+            except (FileNotFoundError, ValueError) as e:
+                lines.append(f"  Workspaces: error reading registry ({e})")
+
         lines.append(f"  Code chunks: {stats['code']['count']}")
         lines.append(f"  Doc chunks: {stats['docs']['count']}")
+
         if not julie_exists:
             lines.append("")
             lines.append("  WARNING: No .julie directory found. Run Julie to index this project first.")
+
+        # Check for stale index (missing workspace_id column)
+        if stats["code"]["count"] > 0:
+            try:
+                code_table = storage._tables.get("code")
+                if code_table is not None:
+                    schema = code_table.schema
+                    if "workspace_id" not in [f.name for f in schema]:
+                        lines.append("")
+                        lines.append("  WARNING: Index is missing workspace_id column (pre-workspace-support).")
+                        lines.append("  Run semantic_index(operation='index') to rebuild.")
+            except Exception:
+                pass
+
         return "\n".join(lines)
 
     elif operation in ("index", "refresh"):
         return await _build_index(
             full_rebuild=(operation == "index"),
+            workspace=workspace,
             doc_paths=doc_paths,
             embeddings=embeddings,
             storage=storage,
@@ -302,6 +344,7 @@ async def manage_index(
 
 async def _build_index(
     full_rebuild: bool,
+    workspace: str | None,
     doc_paths: list[str] | None,
     embeddings: DualEmbeddingManager,
     storage: VectorStorage,
@@ -309,27 +352,47 @@ async def _build_index(
 ) -> str:
     """Build or refresh the vector index from Julie's data and documentation."""
     lines = []
+    target = workspace or "all"
+    primary_ws_id = ""
 
     # --- Index code from Julie ---
     try:
         reader = JulieReader(config.project_root)
-        symbols = reader.read_symbols(
-            exclude_kinds=["import", "variable", "constant"]
-        )
-        file_contents = reader.read_all_file_contents()
+        primary_ws_id = reader.workspace_id
+        workspaces = reader.resolve_workspace(target)
 
-        code_chunks = chunk_code_symbols(
-            symbols, file_contents, max_chars=config.max_code_chunk_chars
-        )
+        if full_rebuild:
+            storage.clear_collection("code")
 
-        if code_chunks:
-            if full_rebuild:
-                storage.clear_collection("code")
+        total_chunks = 0
+        total_symbols = 0
+        for ws in workspaces:
+            symbols = reader.read_symbols(
+                exclude_kinds=["import", "variable", "constant"],
+                workspace_id=ws.id,
+            )
+            file_contents = reader.read_all_file_contents(workspace_id=ws.id)
 
-            texts = [c.text for c in code_chunks]
-            vectors = await asyncio.to_thread(embeddings.embed_code, texts)
-            count = storage.add_chunks(code_chunks, vectors)
-            lines.append(f"Indexed {count} code chunks from {len(symbols)} symbols")
+            code_chunks = chunk_code_symbols(
+                symbols,
+                file_contents,
+                max_chars=config.max_code_chunk_chars,
+                workspace_id=ws.id,
+            )
+
+            if code_chunks:
+                texts = [c.text for c in code_chunks]
+                vectors = await asyncio.to_thread(embeddings.embed_code, texts)
+                count = storage.add_chunks(code_chunks, vectors)
+                total_chunks += count
+                total_symbols += len(symbols)
+                lines.append(
+                    f"  {ws.display_name} ({ws.workspace_type}): "
+                    f"{count} chunks from {len(symbols)} symbols"
+                )
+
+        if total_chunks:
+            lines.insert(0, f"Indexed {total_chunks} code chunks from {total_symbols} symbols across {len(workspaces)} workspace(s):")
         else:
             lines.append("No code symbols found to index")
 
@@ -369,6 +432,10 @@ async def _build_index(
         )
     )
 
+    # Tag doc chunks with primary workspace_id
+    for chunk in all_doc_chunks:
+        chunk.metadata.setdefault("workspace_id", primary_ws_id)
+
     if all_doc_chunks:
         if full_rebuild:
             storage.clear_collection("docs")
@@ -395,34 +462,19 @@ async def explain(
     embeddings: DualEmbeddingManager,
     storage: VectorStorage,
     config: ErosConfig,
+    workspace: str | None = None,
 ) -> str:
     """Implementation of the explain_retrieval tool."""
+    where = f"workspace_id = '{workspace}'" if workspace else None
+
     # Run the search to get results with scores
     code_vec = await asyncio.to_thread(embeddings.embed_query, query, "code")
-    code_results = await asyncio.to_thread(storage.search, "code", code_vec, 10)
+    code_results = await asyncio.to_thread(storage.search, "code", code_vec, 10, where)
 
     docs_vec = await asyncio.to_thread(embeddings.embed_query, query, "docs")
-    doc_results = await asyncio.to_thread(storage.search, "docs", docs_vec, 10)
+    doc_results = await asyncio.to_thread(storage.search, "docs", docs_vec, 10, where)
 
-    all_results = []
-    for r in code_results:
-        all_results.append(
-            SearchResult(
-                text=r.get("text", ""),
-                score=1.0 / (1.0 + r.get("_distance", 0.0)),
-                collection="code",
-                metadata={k: v for k, v in r.items() if k not in ("vector", "text", "_distance")},
-            )
-        )
-    for r in doc_results:
-        all_results.append(
-            SearchResult(
-                text=r.get("text", ""),
-                score=1.0 / (1.0 + r.get("_distance", 0.0)),
-                collection="docs",
-                metadata={k: v for k, v in r.items() if k not in ("vector", "text", "_distance")},
-            )
-        )
+    all_results = _to_results(code_results, "code") + _to_results(doc_results, "docs")
 
     # Find the specific result to explain
     target = None

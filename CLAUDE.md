@@ -83,7 +83,8 @@ eros/
 │       ├── test_julie_reader.py
 │       ├── test_chunking.py
 │       ├── test_embeddings.py
-│       └── test_retrieval.py
+│       ├── test_retrieval.py
+│       └── test_storage.py
 ├── .eros/                     # Runtime data (gitignored)
 │   └── vectors.lance/
 ├── pyproject.toml
@@ -97,17 +98,21 @@ eros/
 ### `semantic_search`
 Find code or documentation by meaning.
 - `scope`: "code", "docs", or "all"
+- `workspace`: Filter by workspace ID, or omit to search all
 - `explain=true`: Show score breakdown
 
 ### `find_similar`
 Find conceptually similar code to a symbol or snippet.
+- `workspace`: Filter by workspace ID, or omit to search all
 
 ### `semantic_index`
 Manage the vector index.
 - Operations: `index`, `refresh`, `stats`, `health`
+- `workspace`: "all" (default), "primary", or specific workspace ID
 
 ### `explain_retrieval`
 RAG diagnostic tool — understand why results ranked as they did.
+- `workspace`: Filter by workspace ID, or omit to search all
 
 ---
 

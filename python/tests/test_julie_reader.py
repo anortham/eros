@@ -1,8 +1,10 @@
 """Tests for Julie Reader — discovering and reading Julie's SQLite databases."""
 
+import json
+
 import pytest
 
-from eros.julie_reader import JulieReader, JulieSymbol
+from eros.julie_reader import JulieReader, JulieSymbol, WorkspaceInfo
 
 
 class TestJulieDiscovery:
@@ -115,3 +117,111 @@ class TestSymbolWithBody:
         body = auth.extract_body(contents.get(auth.file_path, ""))
         assert "def authenticate" in body
         assert "verify_hash" in body
+
+
+class TestMultiWorkspaceDiscovery:
+    """Test discovering and resolving multiple workspaces (primary + references)."""
+
+    def test_list_workspaces_primary_only(self, julie_project):
+        """With no references, list_workspaces returns just the primary."""
+        reader = JulieReader(julie_project["project_root"])
+        workspaces = reader.list_workspaces()
+        assert len(workspaces) == 1
+        assert workspaces[0].id == julie_project["workspace_id"]
+        assert workspaces[0].workspace_type == "Primary"
+
+    def test_list_workspaces_with_refs(self, julie_project_with_refs):
+        """With references, list_workspaces returns primary + valid references."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        workspaces = reader.list_workspaces()
+        assert len(workspaces) == 2
+        ids = {ws.id for ws in workspaces}
+        assert julie_project_with_refs["primary_id"] in ids
+        assert julie_project_with_refs["ref_id"] in ids
+
+    def test_list_workspaces_skips_missing_db(self, julie_project_with_refs):
+        """References with missing DBs are silently skipped."""
+        # Remove the reference workspace's DB
+        ref_id = julie_project_with_refs["ref_id"]
+        ref_db = (
+            julie_project_with_refs["julie_dir"]
+            / "indexes"
+            / ref_id
+            / "db"
+            / "symbols.db"
+        )
+        ref_db.unlink()
+
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        workspaces = reader.list_workspaces()
+        assert len(workspaces) == 1
+        assert workspaces[0].workspace_type == "Primary"
+
+    def test_resolve_primary(self, julie_project_with_refs):
+        """resolve_workspace('primary') returns only the primary workspace."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        workspaces = reader.resolve_workspace("primary")
+        assert len(workspaces) == 1
+        assert workspaces[0].id == julie_project_with_refs["primary_id"]
+
+    def test_resolve_all(self, julie_project_with_refs):
+        """resolve_workspace('all') returns primary + all valid references."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        workspaces = reader.resolve_workspace("all")
+        assert len(workspaces) == 2
+
+    def test_resolve_specific_ref(self, julie_project_with_refs):
+        """resolve_workspace(ref_id) returns just that reference workspace."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        ref_id = julie_project_with_refs["ref_id"]
+        workspaces = reader.resolve_workspace(ref_id)
+        assert len(workspaces) == 1
+        assert workspaces[0].id == ref_id
+        assert workspaces[0].workspace_type == "Reference"
+
+    def test_resolve_unknown_workspace_raises(self, julie_project_with_refs):
+        """resolve_workspace with unknown ID raises ValueError."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        with pytest.raises(ValueError, match="not-a-workspace"):
+            reader.resolve_workspace("not-a-workspace")
+
+    def test_workspace_info_has_db_path(self, julie_project_with_refs):
+        """Each WorkspaceInfo should have a valid db_path."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        for ws in reader.list_workspaces():
+            assert ws.db_path.exists(), f"DB missing for {ws.id}"
+
+
+class TestReadFromReferenceWorkspace:
+    """Test reading symbols and files from reference workspace databases."""
+
+    def test_read_symbols_from_reference(self, julie_project_with_refs):
+        """Should read symbols from a reference workspace's DB."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        ref_id = julie_project_with_refs["ref_id"]
+        symbols = reader.read_symbols(workspace_id=ref_id)
+        assert len(symbols) == 1
+        assert symbols[0].name == "retry"
+        assert symbols[0].language == "rust"
+
+    def test_read_symbols_default_is_primary(self, julie_project_with_refs):
+        """read_symbols() without workspace_id reads from primary."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        symbols = reader.read_symbols()
+        assert len(symbols) == 4  # Primary has 4 Python symbols
+        assert all(s.language == "python" for s in symbols)
+
+    def test_read_file_content_from_reference(self, julie_project_with_refs):
+        """Should read file content from a reference workspace's DB."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        ref_id = julie_project_with_refs["ref_id"]
+        content = reader.read_file_content("src/lib.rs", workspace_id=ref_id)
+        assert "pub fn retry" in content
+
+    def test_read_all_file_contents_from_reference(self, julie_project_with_refs):
+        """Should read all file contents from reference workspace."""
+        reader = JulieReader(julie_project_with_refs["project_root"])
+        ref_id = julie_project_with_refs["ref_id"]
+        contents = reader.read_all_file_contents(workspace_id=ref_id)
+        assert len(contents) == 1
+        assert "src/lib.rs" in contents

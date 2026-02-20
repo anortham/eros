@@ -31,6 +31,7 @@ CODE_COLUMNS = [
     ("file_path", pa.string()),
     ("start_line", pa.int32()),
     ("end_line", pa.int32()),
+    ("workspace_id", pa.string()),
 ]
 
 # Schema for doc chunks
@@ -39,6 +40,7 @@ DOC_COLUMNS = [
     ("text", pa.string()),
     ("file_path", pa.string()),
     ("section", pa.string()),
+    ("workspace_id", pa.string()),
 ]
 
 
@@ -116,6 +118,8 @@ class VectorStorage:
             if collection == "code":
                 row["start_line"] = row.get("start_line") or 0
                 row["end_line"] = row.get("end_line") or 0
+            # Default workspace_id if missing
+            row.setdefault("workspace_id", "")
             rows.append(row)
 
         table.add(rows)

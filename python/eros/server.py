@@ -50,6 +50,7 @@ async def semantic_search(
     file_pattern: str | None = None,
     limit: int = 20,
     explain: bool = False,
+    workspace: str | None = None,
 ) -> str:
     """Find code or documentation by meaning/intent.
 
@@ -64,6 +65,7 @@ async def semantic_search(
         file_pattern: Filter by file glob pattern (e.g., "src/**/*.py")
         limit: Maximum results to return (default: 20)
         explain: Show score breakdown and ranking details for debugging search quality
+        workspace: Filter by workspace — specific workspace ID, or None to search all indexed workspaces
 
     Returns:
         Matching code or documentation ranked by semantic relevance.
@@ -85,6 +87,7 @@ async def semantic_search(
         embeddings=lifecycle.embeddings,
         storage=lifecycle.storage,
         config=lifecycle.config,
+        workspace=workspace,
     )
 
 
@@ -96,6 +99,7 @@ async def find_similar(
     symbol: str,
     scope: str = "code",
     limit: int = 10,
+    workspace: str | None = None,
 ) -> str:
     """Find conceptually similar code to a given symbol or code snippet.
 
@@ -106,6 +110,7 @@ async def find_similar(
         symbol: Symbol name or code snippet to find similar code for
         scope: Search scope — "code" or "docs"
         limit: Maximum results to return (default: 10)
+        workspace: Filter by workspace — specific workspace ID, or None to search all indexed workspaces
 
     Returns:
         Code or documentation that is semantically similar.
@@ -124,6 +129,7 @@ async def find_similar(
         embeddings=lifecycle.embeddings,
         storage=lifecycle.storage,
         config=lifecycle.config,
+        workspace=workspace,
     )
 
 
@@ -171,6 +177,7 @@ async def explain_retrieval(
     query: str,
     result_id: str | None = None,
     result_text: str | None = None,
+    workspace: str | None = None,
 ) -> str:
     """RAG diagnostic tool — understand why results ranked the way they did.
 
@@ -182,6 +189,7 @@ async def explain_retrieval(
         query: The search query to analyze
         result_id: ID of a specific result to explain (from metadata)
         result_text: Text of a specific result to explain (alternative to result_id)
+        workspace: Filter by workspace — specific workspace ID, or None to search all indexed workspaces
 
     Returns:
         Score breakdown showing embedding similarity and ranking details.
@@ -200,6 +208,7 @@ async def explain_retrieval(
         embeddings=lifecycle.embeddings,
         storage=lifecycle.storage,
         config=lifecycle.config,
+        workspace=workspace,
     )
 
 

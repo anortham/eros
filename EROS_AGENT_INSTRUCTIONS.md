@@ -24,11 +24,13 @@ Use when text search returns noise or you're looking for conceptual matches.
 semantic_search("function that retries failed HTTP requests", scope="code")
 semantic_search("how authentication works", scope="docs")
 semantic_search("error handling patterns", scope="all", language="python")
+semantic_search("retry logic", workspace="shared-lib_abc123")  # Search specific workspace
 ```
 
 - `scope="code"` searches implementation (functions, classes, methods)
 - `scope="docs"` searches documentation (markdown, text files)
 - `scope="all"` searches both and fuses results with Reciprocal Rank Fusion
+- `workspace` filters by Julie workspace — use a specific workspace ID, or omit to search all indexed workspaces
 - Use `language` and `file_pattern` to narrow noisy results
 - Set `explain=true` to see score breakdowns when debugging search quality
 
@@ -43,24 +45,32 @@ find_similar("retry with backoff")     # Find retry patterns by description
 
 - Good for discovering duplicate implementations, related patterns, or alternative approaches
 - `scope="code"` (default) searches implementation; `scope="docs"` searches documentation
+- `workspace` filters by Julie workspace (same as semantic_search)
 
 ### semantic_index — Manage the Index
 
 The vector index must be built before search works. Operations:
 
 - `"stats"` — Show index size and model status (default)
-- `"health"` — Check project setup (Julie data, chunk counts)
+- `"health"` — Check project setup (Julie data, chunk counts, workspaces)
 - `"index"` — Full rebuild from Julie's data + documentation files
 - `"refresh"` — Incremental update (same as index currently)
+
+The `workspace` parameter controls which workspaces to index:
+- Omit or `"all"` — index primary + all reference workspaces (default)
+- `"primary"` — index only the primary workspace
+- Specific workspace ID — index only that workspace
 
 **When to rebuild:**
 - After Julie re-indexes the project (new/changed symbols)
 - After adding or editing documentation files
+- After adding a reference workspace in Julie
 - If search quality seems degraded
 
 ```
-semantic_index(operation="health")     # Quick check
-semantic_index(operation="index")      # Full rebuild
+semantic_index(operation="health")                    # Quick check
+semantic_index(operation="index")                     # Full rebuild (all workspaces)
+semantic_index(operation="index", workspace="primary")  # Rebuild primary only
 ```
 
 ### explain_retrieval — Debug Search Quality

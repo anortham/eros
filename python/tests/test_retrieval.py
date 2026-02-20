@@ -1,14 +1,52 @@
 """Tests for retrieval logic — search routing, RRF fusion, and reranking."""
 
+import asyncio
+
 import numpy as np
 import pytest
 
+from eros.chunking import Chunk
+from eros.config import ErosConfig
 from eros.retrieval import (
     SearchResult,
     format_results,
     format_explain,
+    manage_index,
+    search,
     rrf_fuse,
 )
+from eros.storage import VectorStorage
+
+
+class FakeEmbeddings:
+    """Minimal fake that returns random vectors of a fixed dimension."""
+
+    def __init__(self, dim: int = 8):
+        self._dim = dim
+
+        class FakeSlot:
+            model_name = "fake-model"
+            is_loaded = True
+
+        self.code_model = FakeSlot()
+        self.docs_model = FakeSlot()
+
+    @property
+    def code_dimensions(self):
+        return self._dim
+
+    @property
+    def docs_dimensions(self):
+        return self._dim
+
+    def embed_code(self, texts, batch_size=32):
+        return np.random.randn(len(texts), self._dim).astype(np.float32)
+
+    def embed_docs(self, texts, batch_size=32):
+        return np.random.randn(len(texts), self._dim).astype(np.float32)
+
+    def embed_query(self, query, scope):
+        return np.random.randn(self._dim).astype(np.float32)
 
 
 class TestRRFFusion:
@@ -113,3 +151,173 @@ class TestFormatExplain:
         output = format_explain("validate input", result)
         assert "validate" in output
         assert "0.88" in output or "score" in output.lower()
+
+
+class TestMultiWorkspaceIndexing:
+    """Test that _build_index indexes all workspaces and tags chunks."""
+
+    @pytest.fixture
+    def indexing_env(self, julie_project_with_refs, tmp_path):
+        """Set up config, storage, and fake embeddings for indexing tests."""
+        eros_dir = tmp_path / "eros_data"
+        config = ErosConfig(
+            project_root=julie_project_with_refs["project_root"],
+            eros_data_dir=eros_dir,
+        )
+        storage = VectorStorage(config, embedding_dims={"code": 8, "docs": 8})
+        embeddings = FakeEmbeddings(dim=8)
+        return {
+            "config": config,
+            "storage": storage,
+            "embeddings": embeddings,
+            **julie_project_with_refs,
+        }
+
+    @pytest.mark.asyncio
+    async def test_index_all_workspaces(self, indexing_env):
+        """Indexing with workspace='all' should index primary + reference."""
+        result = await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        # Should report chunks from both workspaces
+        stats = indexing_env["storage"].stats()
+        assert stats["code"]["count"] == 5  # 4 primary + 1 reference
+
+    @pytest.mark.asyncio
+    async def test_indexed_chunks_have_workspace_id(self, indexing_env):
+        """Each code chunk should be tagged with its workspace_id."""
+        await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        # Search for all results (no filter)
+        query_vec = np.random.randn(8).astype(np.float32)
+        results = indexing_env["storage"].search("code", query_vec, limit=10)
+        workspace_ids = {r["workspace_id"] for r in results}
+        assert indexing_env["primary_id"] in workspace_ids
+        assert indexing_env["ref_id"] in workspace_ids
+
+    @pytest.mark.asyncio
+    async def test_index_primary_only(self, indexing_env):
+        """Indexing with workspace='primary' should only index primary."""
+        await manage_index(
+            operation="index",
+            workspace="primary",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        stats = indexing_env["storage"].stats()
+        assert stats["code"]["count"] == 4  # Only primary symbols
+
+    @pytest.mark.asyncio
+    async def test_index_specific_workspace(self, indexing_env):
+        """Indexing a specific workspace ID should only index that one."""
+        ref_id = indexing_env["ref_id"]
+        await manage_index(
+            operation="index",
+            workspace=ref_id,
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        stats = indexing_env["storage"].stats()
+        assert stats["code"]["count"] == 1  # Only reference symbol
+
+
+class TestWorkspaceFilteredSearch:
+    """Test that search() filters results by workspace."""
+
+    @pytest.fixture
+    async def indexed_env(self, julie_project_with_refs, tmp_path):
+        """Index all workspaces and return the env for search tests."""
+        eros_dir = tmp_path / "eros_data"
+        config = ErosConfig(
+            project_root=julie_project_with_refs["project_root"],
+            eros_data_dir=eros_dir,
+        )
+        storage = VectorStorage(config, embedding_dims={"code": 8, "docs": 8})
+        embeddings = FakeEmbeddings(dim=8)
+
+        # Index all workspaces
+        await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=embeddings,
+            storage=storage,
+            config=config,
+        )
+
+        return {
+            "config": config,
+            "storage": storage,
+            "embeddings": embeddings,
+            **julie_project_with_refs,
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_primary_only(self, indexed_env):
+        """Search with workspace='primary' returns only primary workspace results."""
+        result = await search(
+            query="authenticate user",
+            scope="code",
+            language=None,
+            file_pattern=None,
+            limit=20,
+            explain=False,
+            workspace=indexed_env["primary_id"],
+            embeddings=indexed_env["embeddings"],
+            storage=indexed_env["storage"],
+            config=indexed_env["config"],
+        )
+        # Should not contain the reference workspace's Rust "retry" function
+        assert "retry" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_all_workspaces(self, indexed_env):
+        """Search with workspace=None returns results from all workspaces."""
+        result = await search(
+            query="function",
+            scope="code",
+            language=None,
+            file_pattern=None,
+            limit=20,
+            explain=False,
+            workspace=None,
+            embeddings=indexed_env["embeddings"],
+            storage=indexed_env["storage"],
+            config=indexed_env["config"],
+        )
+        # With no workspace filter, should return results (5 total indexed)
+        assert "results" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_specific_workspace(self, indexed_env):
+        """Search with a specific workspace ID returns only that workspace."""
+        ref_id = indexed_env["ref_id"]
+        result = await search(
+            query="retry operation",
+            scope="code",
+            language=None,
+            file_pattern=None,
+            limit=20,
+            explain=False,
+            workspace=ref_id,
+            embeddings=indexed_env["embeddings"],
+            storage=indexed_env["storage"],
+            config=indexed_env["config"],
+        )
+        # Should only contain reference workspace results
+        assert "results" in result.lower()

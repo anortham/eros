@@ -137,6 +137,50 @@ class TestCodeChunking:
         assert "fn mystery() -> bool" in chunks[0].text
         assert "Does something mysterious" in chunks[0].text
 
+    def test_code_chunks_carry_workspace_id(self):
+        """Code chunks should carry workspace_id in metadata when provided."""
+        symbols = [
+            JulieSymbol(
+                id="sym1",
+                name="greet",
+                kind="function",
+                language="python",
+                file_path="src/hello.py",
+                signature="def greet()",
+                start_line=1,
+                end_line=2,
+                start_byte=None,
+                end_byte=None,
+                doc_comment=None,
+                visibility="public",
+                parent_id=None,
+            ),
+        ]
+        chunks = chunk_code_symbols(symbols, {}, workspace_id="my-project_abc123")
+        assert chunks[0].metadata["workspace_id"] == "my-project_abc123"
+
+    def test_code_chunks_default_workspace_id(self):
+        """Code chunks should default to empty workspace_id when not provided."""
+        symbols = [
+            JulieSymbol(
+                id="sym1",
+                name="greet",
+                kind="function",
+                language="python",
+                file_path="src/hello.py",
+                signature="def greet()",
+                start_line=1,
+                end_line=2,
+                start_byte=None,
+                end_byte=None,
+                doc_comment=None,
+                visibility="public",
+                parent_id=None,
+            ),
+        ]
+        chunks = chunk_code_symbols(symbols, {})
+        assert chunks[0].metadata["workspace_id"] == ""
+
     def test_truncates_long_bodies(self):
         """Should truncate symbol bodies that exceed max_chars."""
         long_body = "x" * 10000

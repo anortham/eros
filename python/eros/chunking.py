@@ -31,6 +31,7 @@ def chunk_code_symbols(
     symbols: list[JulieSymbol],
     file_contents: dict[str, str],
     max_chars: int = 4000,
+    workspace_id: str = "",
 ) -> list[Chunk]:
     """Create one chunk per code symbol.
 
@@ -85,6 +86,7 @@ def chunk_code_symbols(
                     "file_path": sym.file_path,
                     "start_line": sym.start_line,
                     "end_line": sym.end_line,
+                    "workspace_id": workspace_id,
                 },
             )
         )
