@@ -17,9 +17,7 @@ class ErosConfig:
     # --- Embedding Models ---
     # Code model: optimized for source code understanding
     code_model: str = field(
-        default_factory=lambda: os.environ.get(
-            "EROS_CODE_MODEL", "nomic-ai/CodeRankEmbed"
-        )
+        default_factory=lambda: os.environ.get("EROS_CODE_MODEL", "nomic-ai/CodeRankEmbed")
     )
     # Prose model: optimized for natural language / documentation
     docs_model: str = field(
@@ -63,9 +61,7 @@ class ErosConfig:
 
     # --- Performance ---
     # Compute device: "cpu" (default, safe), "mps", "cuda", or "auto" (detect best)
-    device: str = field(
-        default_factory=lambda: os.environ.get("EROS_DEVICE", "cpu")
-    )
+    device: str = field(default_factory=lambda: os.environ.get("EROS_DEVICE", "cpu"))
     # Auto-unload models after this many seconds of inactivity
     model_idle_timeout_secs: int = 300
     # Check interval for idle model unloading
@@ -80,6 +76,16 @@ class ErosConfig:
     def vectors_path(self) -> Path:
         """Path to LanceDB vector store."""
         return self.eros_data_dir / "vectors.lance"
+
+    @property
+    def index_manifest_path(self) -> Path:
+        """Path to incremental indexing manifest."""
+        return self.eros_data_dir / "index_manifest.json"
+
+    @property
+    def batch_tuning_path(self) -> Path:
+        """Path to persistent embedding batch tuning state."""
+        return self.eros_data_dir / "batch_tuning.json"
 
     @property
     def julie_dir(self) -> Path:

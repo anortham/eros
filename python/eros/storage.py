@@ -51,7 +51,9 @@ def _make_schema(columns: list[tuple], dim: int) -> pa.Schema:
             fields.append(pa.field(name, pa.list_(pa.float32(), dim)))
         else:
             fields.append(pa.field(name, dtype))
-    return pa.Schema.from_pylist([], schema=pa.schema(fields)).schema if False else pa.schema(fields)
+    return (
+        pa.Schema.from_pylist([], schema=pa.schema(fields)).schema if False else pa.schema(fields)
+    )
 
 
 class VectorStorage:
@@ -163,6 +165,15 @@ class VectorStorage:
             self._db.drop_table(collection)
         except Exception:
             pass
+
+    def delete_where(self, collection: str, where: str) -> None:
+        """Delete rows in a collection matching a WHERE clause."""
+        if collection not in self._tables:
+            return
+        try:
+            self._tables[collection].delete(where)
+        except Exception as e:
+            logger.warning("Delete failed on collection '%s': %s", collection, e)
 
     def stats(self) -> dict:
         """Return statistics for each collection."""

@@ -2,13 +2,14 @@
 
 import logging
 import time
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from eros.chunking import Chunk
 from eros.config import ErosConfig
-from eros.embeddings import _ModelSlot, resolve_device
+from eros.embeddings import DualEmbeddingManager, _ModelSlot, adaptive_batch_size, resolve_device
 from eros.storage import VectorStorage
 
 
@@ -249,7 +250,8 @@ class TestModelSlotTiming:
         mock_cls = MagicMock(return_value=mock_instance)
 
         monkeypatch.setattr(
-            "sentence_transformers.SentenceTransformer", mock_cls,
+            "sentence_transformers.SentenceTransformer",
+            mock_cls,
         )
 
         with caplog.at_level(logging.INFO, logger="eros.embeddings"):
@@ -273,3 +275,88 @@ class TestResolveDevice:
     def test_config_default_is_cpu(self):
         config = ErosConfig()
         assert config.device == "cpu"
+
+
+class TestAdaptiveBatchSizing:
+    """Adaptive embedding batch sizing by device type."""
+
+    def test_query_batch_size_is_one(self):
+        assert adaptive_batch_size("cuda", 100, target="query") == 1
+
+    def test_cpu_index_batch_size_capped(self):
+        assert adaptive_batch_size("cpu", 100, target="index") == 16
+
+    def test_cuda_index_batch_size_capped_by_text_count(self):
+        assert adaptive_batch_size("cuda", 10, target="index") == 10
+
+    def test_unknown_device_uses_safe_default(self):
+        assert adaptive_batch_size("weird", 100, target="index") == 16
+
+
+class TestSelfTuningBatching:
+    """Runtime self-tuning for indexing batch size."""
+
+    class FakeSlot:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, texts, batch_size=32):
+            self.calls.append(batch_size)
+            # Simulate OOM if batch is too large
+            if batch_size > 8:
+                raise RuntimeError("CUDA out of memory")
+            return np.random.randn(len(texts), 8).astype(np.float32)
+
+    def test_autotune_reduces_batch_on_oom(self, tmp_path):
+        manager = DualEmbeddingManager(ErosConfig(device="cpu", eros_data_dir=tmp_path / ".eros"))
+        manager.code_model = cast(Any, self.FakeSlot())
+
+        vectors = manager.embed_code([f"x{i}" for i in range(40)])
+        state = manager.batch_tuning_state("code", avg_text_len=2)
+        calls = cast(Any, manager.code_model).calls
+
+        assert vectors.shape[0] == 40
+        assert any(call > 8 for call in calls)
+        assert any(call <= 8 for call in calls)
+        assert state["batch_size"] <= 12
+
+    def test_autotune_grows_batch_on_successful_large_workload(self, tmp_path):
+        manager = DualEmbeddingManager(ErosConfig(device="cpu", eros_data_dir=tmp_path / ".eros"))
+
+        class AlwaysOkSlot:
+            def __init__(self):
+                self.calls = []
+
+            def encode(self, texts, batch_size=32):
+                self.calls.append(batch_size)
+                return np.random.randn(len(texts), 8).astype(np.float32)
+
+        manager.code_model = cast(Any, AlwaysOkSlot())
+        before = manager.batch_tuning_state("code", avg_text_len=2)["batch_size"]
+
+        manager.embed_code([f"x{i}" for i in range(200)])
+        after = manager.batch_tuning_state("code", avg_text_len=2)["batch_size"]
+
+        assert cast(Any, manager.code_model).calls
+        assert after >= before
+
+    def test_tuning_persists_across_manager_restarts(self, tmp_path):
+        config = ErosConfig(device="cpu", eros_data_dir=tmp_path / ".eros")
+        manager1 = DualEmbeddingManager(config)
+        manager1.code_model = cast(Any, self.FakeSlot())
+        manager1.embed_code([f"x{i}" for i in range(40)])
+        tuned = manager1.batch_tuning_state("code", avg_text_len=2)["batch_size"]
+
+        manager2 = DualEmbeddingManager(config)
+        loaded = manager2.batch_tuning_state("code", avg_text_len=2)["batch_size"]
+        assert loaded == tuned
+
+    def test_tuning_is_bucket_specific(self, tmp_path):
+        manager = DualEmbeddingManager(ErosConfig(device="cpu", eros_data_dir=tmp_path / ".eros"))
+        manager.code_model = cast(Any, self.FakeSlot())
+
+        manager.embed_code([f"s{i}" for i in range(40)])
+        small_bucket = manager.batch_tuning_state("code", avg_text_len=2)["batch_size"]
+        medium_bucket = manager.batch_tuning_state("code", avg_text_len=1000)["batch_size"]
+
+        assert small_bucket != medium_bucket

@@ -1,6 +1,5 @@
 """Tests for Julie Reader — discovering and reading Julie's SQLite databases."""
 
-
 import pytest
 from eros.julie_reader import JulieReader
 
@@ -77,6 +76,13 @@ class TestReadSymbols:
         assert len(no_methods) == 3
         assert not any(s.kind == "method" for s in no_methods)
 
+    def test_filter_by_file_paths(self, julie_project):
+        """Should filter symbols to selected file paths."""
+        reader = JulieReader(julie_project["project_root"])
+        symbols = reader.read_symbols(file_paths=["src/auth/handler.py"])
+        assert len(symbols) == 1
+        assert symbols[0].name == "authenticate"
+
 
 class TestReadFileContent:
     """Test reading file content from Julie's files table."""
@@ -100,6 +106,20 @@ class TestReadFileContent:
         assert len(contents) == 3
         assert "src/auth/handler.py" in contents
         assert "def authenticate" in contents["src/auth/handler.py"]
+
+    def test_read_selected_file_contents(self, julie_project):
+        """Should return file content for only selected files."""
+        reader = JulieReader(julie_project["project_root"])
+        contents = reader.read_file_contents(["src/auth/tokens.py"])
+        assert len(contents) == 1
+        assert "src/auth/tokens.py" in contents
+
+    def test_read_file_hashes(self, julie_project):
+        """Should return file hashes from Julie files table."""
+        reader = JulieReader(julie_project["project_root"])
+        hashes = reader.read_file_hashes()
+        assert hashes["src/auth/handler.py"] == "abc123"
+        assert hashes["src/auth/tokens.py"] == "def456"
 
 
 class TestSymbolWithBody:
@@ -141,13 +161,7 @@ class TestMultiWorkspaceDiscovery:
         """References with missing DBs are silently skipped."""
         # Remove the reference workspace's DB
         ref_id = julie_project_with_refs["ref_id"]
-        ref_db = (
-            julie_project_with_refs["julie_dir"]
-            / "indexes"
-            / ref_id
-            / "db"
-            / "symbols.db"
-        )
+        ref_db = julie_project_with_refs["julie_dir"] / "indexes" / ref_id / "db" / "symbols.db"
         ref_db.unlink()
 
         reader = JulieReader(julie_project_with_refs["project_root"])

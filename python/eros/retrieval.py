@@ -10,19 +10,12 @@ Handles:
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from eros.chunking import (
-    Chunk,
-    chunk_code_symbols,
-    chunk_doc_files,
-    chunk_documentation,
-    discover_doc_sources,
-)
 from eros.config import ErosConfig
 from eros.embeddings import DualEmbeddingManager
+from eros.incremental import sql_quote
+from eros.indexing import build_index
 from eros.julie_reader import JulieReader
 from eros.storage import VectorStorage
 
@@ -189,14 +182,26 @@ async def search(
 
     if scope in ("code", "all"):
         code_results = await _search_collection(
-            query, "code", language, file_pattern, limit, embeddings, storage,
+            query,
+            "code",
+            language,
+            file_pattern,
+            limit,
+            embeddings,
+            storage,
             workspace_id=ws_filter,
         )
         results.extend(code_results)
 
     if scope in ("docs", "all"):
         doc_results = await _search_collection(
-            query, "docs", None, file_pattern, limit, embeddings, storage,
+            query,
+            "docs",
+            None,
+            file_pattern,
+            limit,
+            embeddings,
+            storage,
             workspace_id=ws_filter,
         )
         results.extend(doc_results)
@@ -230,19 +235,17 @@ async def _search_collection(
     # Build WHERE clause for filtering
     where_parts = []
     if language and collection == "code":
-        where_parts.append(f"language = '{language}'")
+        where_parts.append(f"language = '{sql_quote(language)}'")
     if file_pattern:
         # Simple glob-to-SQL: convert * to %
-        pattern = file_pattern.replace("*", "%")
+        pattern = sql_quote(file_pattern.replace("*", "%"))
         where_parts.append(f"file_path LIKE '{pattern}'")
     if workspace_id:
-        where_parts.append(f"workspace_id = '{workspace_id}'")
+        where_parts.append(f"workspace_id = '{sql_quote(workspace_id)}'")
 
     where = " AND ".join(where_parts) if where_parts else None
 
-    raw_results = await asyncio.to_thread(
-        storage.search, collection, query_vec, limit, where
-    )
+    raw_results = await asyncio.to_thread(storage.search, collection, query_vec, limit, where)
 
     return _to_results(raw_results, collection)
 
@@ -260,10 +263,8 @@ async def find_similar_code(
     collection = "code" if scope == "code" else "docs"
     query_vec = await asyncio.to_thread(embeddings.embed_query, symbol, collection)
 
-    where = f"workspace_id = '{workspace}'" if workspace else None
-    raw_results = await asyncio.to_thread(
-        storage.search, collection, query_vec, limit, where
-    )
+    where = f"workspace_id = '{sql_quote(workspace)}'" if workspace else None
+    raw_results = await asyncio.to_thread(storage.search, collection, query_vec, limit, where)
 
     return format_results(_to_results(raw_results, collection), explain=False)
 
@@ -285,8 +286,12 @@ async def manage_index(
         code_model = embeddings.code_model
         docs_model = embeddings.docs_model
         lines.append("")
-        lines.append(f"  Code model: {code_model.model_name} ({'loaded' if code_model.is_loaded else 'not loaded'})")
-        lines.append(f"  Docs model: {docs_model.model_name} ({'loaded' if docs_model.is_loaded else 'not loaded'})")
+        lines.append(
+            f"  Code model: {code_model.model_name} ({'loaded' if code_model.is_loaded else 'not loaded'})"
+        )
+        lines.append(
+            f"  Docs model: {docs_model.model_name} ({'loaded' if docs_model.is_loaded else 'not loaded'})"
+        )
         return "\n".join(lines)
 
     elif operation == "health":
@@ -312,7 +317,9 @@ async def manage_index(
 
         if not julie_exists:
             lines.append("")
-            lines.append("  WARNING: No .julie directory found. Run Julie to index this project first.")
+            lines.append(
+                "  WARNING: No .julie directory found. Run Julie to index this project first."
+            )
 
         # Check for stale index (missing workspace_id column)
         if stats["code"]["count"] > 0:
@@ -322,7 +329,9 @@ async def manage_index(
                     schema = code_table.schema
                     if "workspace_id" not in [f.name for f in schema]:
                         lines.append("")
-                        lines.append("  WARNING: Index is missing workspace_id column (pre-workspace-support).")
+                        lines.append(
+                            "  WARNING: Index is missing workspace_id column (pre-workspace-support)."
+                        )
                         lines.append("  Run semantic_index(operation='index') to rebuild.")
             except Exception:
                 pass
@@ -351,109 +360,14 @@ async def _build_index(
     storage: VectorStorage,
     config: ErosConfig,
 ) -> str:
-    """Build or refresh the vector index from Julie's data and documentation."""
-    t_start = time.monotonic()
-    lines = []
-    target = workspace or "all"
-    primary_ws_id = ""
-
-    # --- Index code from Julie ---
-    try:
-        reader = JulieReader(config.project_root)
-        primary_ws_id = reader.workspace_id
-        workspaces = reader.resolve_workspace(target)
-
-        if full_rebuild:
-            storage.clear_collection("code")
-
-        total_chunks = 0
-        total_symbols = 0
-        for ws in workspaces:
-            symbols = reader.read_symbols(
-                exclude_kinds=["import", "variable", "constant"],
-                workspace_id=ws.id,
-            )
-            file_contents = reader.read_all_file_contents(workspace_id=ws.id)
-
-            code_chunks = chunk_code_symbols(
-                symbols,
-                file_contents,
-                max_chars=config.max_code_chunk_chars,
-                workspace_id=ws.id,
-            )
-
-            if code_chunks:
-                texts = [c.text for c in code_chunks]
-                t_ws = time.monotonic()
-                vectors = await asyncio.to_thread(embeddings.embed_code, texts, batch_size=64)
-                ws_elapsed = time.monotonic() - t_ws
-                count = storage.add_chunks(code_chunks, vectors)
-                total_chunks += count
-                total_symbols += len(symbols)
-                lines.append(f"  {ws.display_name} ({ws.workspace_type}): {count} chunks from {len(symbols)} symbols [{ws_elapsed:.1f}s]")
-
-        if total_chunks:
-            total_elapsed = time.monotonic() - t_start
-            lines.insert(0, f"Indexed {total_chunks} code chunks from {total_symbols} symbols across {len(workspaces)} workspace(s) in {total_elapsed:.1f}s:")
-        else:
-            lines.append("No code symbols found to index")
-
-    except FileNotFoundError as e:
-        lines.append(f"Julie data not available: {e}")
-
-    # --- Index documentation ---
-    doc_dirs, root_doc_files = discover_doc_sources(config.project_root)
-
-    # Add any explicitly specified doc paths
-    if doc_paths:
-        for p in doc_paths:
-            path = Path(p)
-            if path.is_dir():
-                doc_dirs.append(path)
-            elif path.is_file():
-                root_doc_files.append(path)
-
-    all_doc_chunks: list[Chunk] = []
-    for doc_dir in doc_dirs:
-        all_doc_chunks.extend(
-            chunk_documentation(
-                doc_dir,
-                max_chars=config.max_doc_chunk_chars,
-                overlap=config.doc_chunk_overlap,
-            )
-        )
-
-    all_doc_chunks.extend(
-        chunk_doc_files(
-            root_doc_files,
-            max_chars=config.max_doc_chunk_chars,
-            overlap=config.doc_chunk_overlap,
-        )
+    return await build_index(
+        full_rebuild=full_rebuild,
+        workspace=workspace,
+        doc_paths=doc_paths,
+        embeddings=embeddings,
+        storage=storage,
+        config=config,
     )
-
-    # Tag doc chunks with primary workspace_id
-    for chunk in all_doc_chunks:
-        chunk.metadata.setdefault("workspace_id", primary_ws_id)
-
-    if all_doc_chunks:
-        if full_rebuild:
-            storage.clear_collection("docs")
-
-        texts = [c.text for c in all_doc_chunks]
-        t_doc = time.monotonic()
-        vectors = await asyncio.to_thread(embeddings.embed_docs, texts, batch_size=64)
-        doc_elapsed = time.monotonic() - t_doc
-        count = storage.add_chunks(all_doc_chunks, vectors)
-        parts = []
-        if doc_dirs:
-            parts.append(f"{len(doc_dirs)} directories")
-        if root_doc_files:
-            parts.append(f"{len(root_doc_files)} root files")
-        lines.append(f"Indexed {count} doc chunks from {' + '.join(parts)} [{doc_elapsed:.1f}s]")
-    else:
-        lines.append("No documentation found to index")
-
-    return "\n".join(lines) if lines else "Nothing to index"
 
 
 async def explain(
@@ -466,7 +380,7 @@ async def explain(
     workspace: str | None = None,
 ) -> str:
     """Implementation of the explain_retrieval tool."""
-    where = f"workspace_id = '{workspace}'" if workspace else None
+    where = f"workspace_id = '{sql_quote(workspace)}'" if workspace else None
 
     # Run the search to get results with scores
     code_vec = await asyncio.to_thread(embeddings.embed_query, query, "code")

@@ -1,6 +1,5 @@
 """Tests for retrieval logic — search routing, RRF fusion, and reranking."""
 
-
 import numpy as np
 import pytest
 from eros.config import ErosConfig
@@ -20,6 +19,8 @@ class FakeEmbeddings:
 
     def __init__(self, dim: int = 8):
         self._dim = dim
+        self.code_batch_sizes = []
+        self.docs_batch_sizes = []
 
         class FakeSlot:
             model_name = "fake-model"
@@ -37,10 +38,15 @@ class FakeEmbeddings:
         return self._dim
 
     def embed_code(self, texts, batch_size=32):
+        self.code_batch_sizes.append(batch_size)
         return np.random.randn(len(texts), self._dim).astype(np.float32)
 
     def embed_docs(self, texts, batch_size=32):
+        self.docs_batch_sizes.append(batch_size)
         return np.random.randn(len(texts), self._dim).astype(np.float32)
+
+    def index_batch_size(self, scope, text_count, avg_text_len=0.0):
+        return 7 if scope == "code" else 5
 
     def embed_query(self, query, scope):
         return np.random.randn(self._dim).astype(np.float32)
@@ -249,6 +255,45 @@ class TestMultiWorkspaceIndexing:
         assert re.search(r"in \d+\.\d+s", result), f"No total timing in: {result}"
         # Per-workspace time in brackets
         assert re.search(r"\[\d+\.\d+s\]", result), f"No per-ws timing in: {result}"
+
+    @pytest.mark.asyncio
+    async def test_refresh_unchanged_does_not_duplicate_chunks(self, indexing_env):
+        """Refresh should skip unchanged files and avoid duplicate rows."""
+        await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        before = indexing_env["storage"].stats()["code"]["count"]
+
+        refresh_result = await manage_index(
+            operation="refresh",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        after = indexing_env["storage"].stats()["code"]["count"]
+
+        assert after == before
+        assert "up-to-date" in refresh_result
+
+    @pytest.mark.asyncio
+    async def test_index_uses_adaptive_batch_size(self, indexing_env):
+        """Indexing should ask embeddings manager for batch size."""
+        await manage_index(
+            operation="index",
+            workspace="all",
+            doc_paths=None,
+            embeddings=indexing_env["embeddings"],
+            storage=indexing_env["storage"],
+            config=indexing_env["config"],
+        )
+        assert 7 in indexing_env["embeddings"].code_batch_sizes
 
 
 class TestWorkspaceFilteredSearch:

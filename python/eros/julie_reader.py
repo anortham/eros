@@ -58,9 +58,7 @@ class JulieSymbol:
             return ""
         if self.start_byte is not None and self.end_byte is not None:
             content_bytes = file_content.encode("utf-8", errors="replace")
-            return content_bytes[self.start_byte : self.end_byte].decode(
-                "utf-8", errors="replace"
-            )
+            return content_bytes[self.start_byte : self.end_byte].decode("utf-8", errors="replace")
         return file_content
 
 
@@ -199,6 +197,7 @@ class JulieReader:
         kinds: list[str] | None = None,
         exclude_kinds: list[str] | None = None,
         languages: list[str] | None = None,
+        file_paths: list[str] | None = None,
         workspace_id: str | None = None,
     ) -> list[JulieSymbol]:
         """Read symbols from Julie's database with optional filtering.
@@ -207,6 +206,7 @@ class JulieReader:
             kinds: Only include these symbol kinds (e.g., ["function", "class"])
             exclude_kinds: Exclude these symbol kinds (e.g., ["import", "variable"])
             languages: Only include these languages (e.g., ["python", "typescript"])
+            file_paths: Only include symbols from these file paths
             workspace_id: Read from this workspace's DB (default: primary)
         """
         query = """
@@ -233,6 +233,11 @@ class JulieReader:
             query += f" AND language IN ({placeholders})"
             params.extend(languages)
 
+        if file_paths:
+            placeholders = ", ".join("?" for _ in file_paths)
+            query += f" AND file_path IN ({placeholders})"
+            params.extend(file_paths)
+
         conn = self._connect(workspace_id)
         try:
             rows = conn.execute(query, params).fetchall()
@@ -257,25 +262,40 @@ class JulieReader:
         finally:
             conn.close()
 
-    def read_file_content(
-        self, file_path: str, workspace_id: str | None = None
-    ) -> str | None:
+    def read_file_content(self, file_path: str, workspace_id: str | None = None) -> str | None:
         """Read the stored content for a specific file.
 
         Returns None if the file is not found in Julie's database.
         """
         conn = self._connect(workspace_id)
         try:
-            row = conn.execute(
-                "SELECT content FROM files WHERE path = ?", (file_path,)
-            ).fetchone()
+            row = conn.execute("SELECT content FROM files WHERE path = ?", (file_path,)).fetchone()
             return row["content"] if row else None
         finally:
             conn.close()
 
-    def read_all_file_contents(
-        self, workspace_id: str | None = None
+    def read_file_contents(
+        self, file_paths: list[str], workspace_id: str | None = None
     ) -> dict[str, str]:
+        """Read content for a selected set of files.
+
+        Returns a dict of file_path -> content for found files.
+        """
+        if not file_paths:
+            return {}
+
+        placeholders = ", ".join("?" for _ in file_paths)
+        conn = self._connect(workspace_id)
+        try:
+            rows = conn.execute(
+                f"SELECT path, content FROM files WHERE content IS NOT NULL AND path IN ({placeholders})",
+                file_paths,
+            ).fetchall()
+            return {row["path"]: row["content"] for row in rows}
+        finally:
+            conn.close()
+
+    def read_all_file_contents(self, workspace_id: str | None = None) -> dict[str, str]:
         """Read content for all files in Julie's database.
 
         Returns a dict of file_path -> content.
@@ -286,5 +306,17 @@ class JulieReader:
                 "SELECT path, content FROM files WHERE content IS NOT NULL"
             ).fetchall()
             return {row["path"]: row["content"] for row in rows}
+        finally:
+            conn.close()
+
+    def read_file_hashes(self, workspace_id: str | None = None) -> dict[str, str]:
+        """Read file hashes from Julie's files table.
+
+        Returns a dict of file_path -> hash.
+        """
+        conn = self._connect(workspace_id)
+        try:
+            rows = conn.execute("SELECT path, hash FROM files").fetchall()
+            return {row["path"]: row["hash"] for row in rows}
         finally:
             conn.close()
